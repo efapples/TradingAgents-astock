@@ -227,27 +227,55 @@ def _load_ohlcv_astock(symbol: str, curr_date: str) -> pd.DataFrame:
             return data[data["Date"] <= cutoff]
 
     # Fetch from mootdx — 800 daily bars (~3 years of trading days)
-    client = _get_mootdx_client()
-    df = client.bars(symbol=code, category=4, offset=800)
+    try:
+        client = _get_mootdx_client()
+        df = client.bars(symbol=code, category=4, offset=800)
 
-    if df is None or df.empty:
-        raise ValueError(f"No OHLCV data from mootdx for {code}")
+        if df is None or df.empty:
+            raise ValueError(f"No OHLCV data from mootdx for {code}")
 
-    # mootdx returns index named 'datetime' AND a column named 'datetime'
-    # (plus year/month/day/hour/minute/volume). Drop duplicates before reset.
-    df = df.drop(columns=["datetime", "year", "month", "day", "hour", "minute"], errors="ignore")
-    df = df.reset_index()  # moves index 'datetime' → column 'datetime'
-    rename_map = {
-        "datetime": "Date",
-        "open": "Open",
-        "close": "Close",
-        "high": "High",
-        "low": "Low",
-        "volume": "Volume",
-    }
-    df = df.rename(columns=rename_map)
-    df = df[["Date", "Open", "High", "Low", "Close", "Volume"]]
-    df["Date"] = pd.to_datetime(df["Date"])
+        # mootdx returns index named 'datetime' AND a column named 'datetime'
+        # (plus year/month/day/hour/minute/volume). Drop duplicates before reset.
+        df = df.drop(columns=["datetime", "year", "month", "day", "hour", "minute"], errors="ignore")
+        df = df.reset_index()  # moves index 'datetime' → column 'datetime'
+        rename_map = {
+            "datetime": "Date",
+            "open": "Open",
+            "close": "Close",
+            "high": "High",
+            "low": "Low",
+            "volume": "Volume",
+        }
+        df = df.rename(columns=rename_map)
+        df = df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        df["Date"] = pd.to_datetime(df["Date"])
+    except Exception as e:
+        logger.warning("mootdx OHLCV failed for %s: %s, trying akshare fallback", code, e)
+        # Fallback: akshare sina source
+        try:
+            import akshare as ak
+
+            prefix = "sh" if code.startswith("6") else "sz"
+            sina_symbol = f"{prefix}{code}"
+            # Calculate date range for akshare query (~3 years back)
+            end_dt = datetime.now()
+            start_dt = end_dt - relativedelta(years=3)
+            df_ak = ak.stock_zh_a_daily(
+                symbol=sina_symbol,
+                start_date=start_dt.strftime("%Y%m%d"),
+                end_date=end_dt.strftime("%Y%m%d"),
+                adjust="qfq",
+            )
+            if df_ak is None or df_ak.empty:
+                raise ValueError(f"No OHLCV data from akshare for {code}")
+            df_ak = df_ak.rename(columns={
+                "date": "Date", "open": "Open", "close": "Close",
+                "high": "High", "low": "Low", "volume": "Volume",
+            })
+            df_ak["Date"] = pd.to_datetime(df_ak["Date"])
+            df = df_ak[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
+        except Exception:
+            raise ValueError(f"No OHLCV data from mootdx for {code}")
 
     # Cache to disk
     df.to_csv(cache_file, index=False, encoding="utf-8")
@@ -273,15 +301,13 @@ def get_stock_data(
     """Get OHLCV stock price data via mootdx."""
     code = _normalize_ticker(symbol)
 
+    data_source = "mootdx (TCP)"
     try:
         client = _get_mootdx_client()
         df = client.bars(symbol=code, category=4, offset=800)
 
         if df is None or df.empty:
-            return (
-                f"No data found for A-stock '{code}' "
-                f"between {start_date} and {end_date}"
-            )
+            raise ValueError(f"No data from mootdx for {code}")
 
         # Drop duplicate datetime column + extra columns before reset_index
         df = df.drop(
@@ -300,39 +326,65 @@ def get_stock_data(
                 "amount": "Amount",
             }
         )
-
-        # Filter by date range
         df["Date"] = pd.to_datetime(df["Date"])
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        df = df[(df["Date"] >= start_dt) & (df["Date"] <= end_dt)]
-
-        if df.empty:
-            return (
-                f"No data found for A-stock '{code}' "
-                f"between {start_date} and {end_date}"
-            )
-
-        for col in ["Open", "High", "Low", "Close"]:
-            if col in df.columns:
-                df[col] = df[col].round(2)
-
-        df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
-        csv_out = df[["Date", "Open", "High", "Low", "Close", "Volume"]].to_csv(
-            index=False
-        )
-
-        header = f"# Stock data for {code} (A-stock) from {start_date} to {end_date}\n"
-        header += f"# Total records: {len(df)}\n"
-        header += "# Data source: mootdx (TCP)\n"
-        header += (
-            f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        )
-
-        return header + csv_out
 
     except Exception as e:
-        return f"Error retrieving A-stock data for {code}: {str(e)}"
+        logger.warning("mootdx K-line failed for %s: %s, trying akshare fallback", code, e)
+        # Fallback: akshare sina source
+        try:
+            import akshare as ak
+
+            prefix = "sh" if code.startswith("6") else "sz"
+            sina_symbol = f"{prefix}{code}"
+            start_str = start_date.replace("-", "")
+            end_str = end_date.replace("-", "")
+            df_ak = ak.stock_zh_a_daily(
+                symbol=sina_symbol,
+                start_date=start_str,
+                end_date=end_str,
+                adjust="qfq",
+            )
+            if df_ak is not None and not df_ak.empty:
+                df_ak = df_ak.rename(columns={
+                    "date": "Date", "open": "Open", "close": "Close",
+                    "high": "High", "low": "Low", "volume": "Volume",
+                })
+                df_ak["Date"] = pd.to_datetime(df_ak["Date"])
+                df = df_ak
+                data_source = "akshare (sina fallback)"
+            else:
+                return "K线数据获取失败：mootdx和akshare备用源均不可用，请检查网络连接"
+        except Exception:
+            return "K线数据获取失败：mootdx和akshare备用源均不可用，请检查网络连接"
+
+    # Filter by date range
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+    df = df[(df["Date"] >= start_dt) & (df["Date"] <= end_dt)]
+
+    if df.empty:
+        return (
+            f"No data found for A-stock '{code}' "
+            f"between {start_date} and {end_date}"
+        )
+
+    for col in ["Open", "High", "Low", "Close"]:
+        if col in df.columns:
+            df[col] = df[col].round(2)
+
+    df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+    csv_out = df[["Date", "Open", "High", "Low", "Close", "Volume"]].to_csv(
+        index=False
+    )
+
+    header = f"# Stock data for {code} (A-stock) from {start_date} to {end_date}\n"
+    header += f"# Total records: {len(df)}\n"
+    header += f"# Data source: {data_source}\n"
+    header += (
+        f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    )
+
+    return header + csv_out
 
 
 # ---- 2. get_indicators ----

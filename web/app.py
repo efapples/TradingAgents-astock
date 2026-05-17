@@ -43,8 +43,9 @@ st.markdown(
     /* Hide Streamlit chrome for clean video recording */
     #MainMenu, header[data-testid="stHeader"],
     footer, div[data-testid="stDecoration"],
-    button[data-testid="stBaseButton-header"],
     div[data-testid="stToolbar"] { display: none !important; }
+    /* Ensure sidebar collapse/expand control is always visible */
+    button[data-testid="collapsedControl"] { display: flex !important; }
 
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, sans-serif;
