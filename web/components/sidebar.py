@@ -18,8 +18,8 @@ from web.history import (
 
 # Provider display names in recommended order
 _PROVIDERS: list[tuple[str, str]] = [
-    ("MiniMax（推荐·国内直连）", "minimax"),
-    ("DeepSeek", "deepseek"),
+    ("DeepSeek（推荐）", "deepseek"),
+    ("MiniMax", "minimax"),
     ("通义千问 Qwen", "qwen"),
     ("智谱 GLM", "glm"),
     ("OpenAI", "openai"),
